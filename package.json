@@ -1,6 +1,6 @@
 {
   "name": "webscrape",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "Scrape web pages. Uses and returns promises",
   "main": "dist/index.js",
   "scripts": {
