@@ -1,14 +1,12 @@
 // @flow strict
-import request from 'request';
 import fs from 'fs';
-import zlib from 'zlib';
 
 import lib, { type WebscrapeResult, type WebscrapeOptions, type OptionsObject } from './lib';
 import { debuglog } from 'util';
 
 const log = debuglog('webscrape');
 
-const { betterRequest, constructOptionsWithJar, constructError, constructResult, determineFilename } = lib;
+const { createCookieJar, betterRequest, streamRequest, constructOptionsWithJar, constructError, constructResult, determineFilename } = lib;
 
 function isOK(statusCode: number): boolean {
 	const str = statusCode && statusCode.toString();
@@ -45,12 +43,12 @@ type ScraperApi = {|
 	download: (uri: string, DownloadOptions) => Promise<string>
 |};
 
-function extractBody(res: http$IncomingMessage<>): Promise<string> {
+function extractBody(res: stream$Readable): Promise<string> {
 	return new Promise((ok, fail) => {
-		let body;
-		res.on('data', (chunk) => body += chunk);
+		const chunks = [];
+		res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
 		res.on('end', () => {
-			return ok(body);
+			return ok(Buffer.concat(chunks).toString('utf8'));
 		});	
 		res.on('error', (err: Error) => {
 			return fail(err);
@@ -61,7 +59,7 @@ function extractBody(res: http$IncomingMessage<>): Promise<string> {
 // creates a closure instance of a scraper
 function Scraper(): ScraperApi {
 
-	const jar = request.jar();
+	const jar = createCookieJar();
 	const constructOptions = (uri: string, {
 		headers, query, body, method, agentOptions, indicies
 	}: $Shape<WebscrapeOptions> = {} ): OptionsObject => constructOptionsWithJar(uri, {
@@ -73,7 +71,7 @@ function Scraper(): ScraperApi {
 		return betterRequest(options, (err, resp, body) => {
 			if (err) {
 				return reject(err);
-			} else if (resp && body) {
+			} else if (resp && body !== undefined) {
 				const bodyStr: string = body instanceof Buffer ? body.toString('utf8') : body;
 				if (!isOK(resp.statusCode)) {
 					return reject(constructError(options, resp, bodyStr));
@@ -92,7 +90,7 @@ function Scraper(): ScraperApi {
 		return betterRequest(options, function(err, resp, body) {
 			if (err) {
 				return reject(err);
-			} else if (resp && body) {
+			} else if (resp && body !== undefined) {
 				const bodyStr: string = body instanceof Buffer ? body.toString('utf8') : body;
 				if (!isOK(resp.statusCode)) {
 					return reject(constructError(options, resp, bodyStr));
@@ -120,42 +118,25 @@ function Scraper(): ScraperApi {
 			// normal operation resumes
 			const options = constructOptions(uri, preOpts);
 			const writeStream = fs.createWriteStream(downloadpath);
-			const req = request(options);
-
-			return new Promise((resolve, reject) => {
-				// adapted from http://nickfishman.com/post/49533681471/nodejs-http-requests-with-gzip-deflate-compression,
-				// but this time this is clearly a use case for streams
-				req.on('response', function(res) {
-					var encoding = res.headers['content-encoding'];
-
-					// TODO: I need to support more status codes
-					if (!isOK(res.statusCode)) {
-						extractBody(res)
-							.then((errorBody) => reject(constructError(options, res, errorBody)))
-							.catch(() => reject(constructError(options, res, 'no-body-could-be-extracted')))
-					} else {
-						if (encoding === 'gzip') {
-							res.pipe(zlib.createGunzip()).pipe(writeStream);
-						} else if (encoding === 'deflate') {
-							res.pipe(zlib.createInflate()).pipe(writeStream);
-						} else {
-							res.pipe(writeStream);
-						}
+			return streamRequest(options)
+				.then(({ response, stream }): Promise<string> => new Promise((resolve, reject) => {
+					if (!isOK(response.statusCode)) {
+						extractBody(stream)
+							.then((errorBody) => reject(constructError(options, response, errorBody)))
+							.catch(() => reject(constructError(options, response, 'no-body-could-be-extracted')));
+						return;
 					}
-				});
 
-				req.on('error', function(err) {
-					return reject(err);
-				});
+					stream.on('error', (err) => reject(err));
+					writeStream.on('error', function(err) {
+						return reject(err);
+					}).on('finish', function() {
+						writeStream.close();
+						return resolve(downloadpath);
+					});
 
-				writeStream.on('error', function(err) {
-					return reject(err);
-				}).on('finish', function() {
-					writeStream.close();
-					return resolve(downloadpath);
-				});
-
-			});
+					stream.pipe(writeStream);
+				}));
 
 		});
 

@@ -164,7 +164,8 @@ describe('Scraper', () => {
 		it('should be able to add a header that is sent in the HTTP request', async () => {
 			const scraper = Scraper();
 			const result = await scraper.get(HEADER_DIAGNOSIS_URL, { headers });
-			assert.ok(result.$('th:contains("Referer")').next().text().includes('nonsense'));
+			const refererHeader = result.$('th').filter((_, cell) => result.$(cell).text().trim().toLowerCase() === 'referer');
+			assert.ok(refererHeader.next().text().toLowerCase().includes('nonsense'));
 		});
 
 		it('should be able to download a file with the header sent in the HTTP request', async () => {
